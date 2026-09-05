@@ -60,6 +60,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...baseEnv, PORT: "" })).toThrow(/PORT/);
   });
 
+  it("fails closed on a whitespace-only PORT (re-review-2026-09-05 finding: Number(' ') === 0 slipped past a bare '' check)", () => {
+    expect(() => loadConfig({ ...baseEnv, PORT: " " })).toThrow(/PORT/);
+  });
+
   it("accepts an explicit PORT of 0 (Node's own convention: let the OS assign a free port)", () => {
     const config = loadConfig({ ...baseEnv, PORT: "0" });
     expect(config.port).toBe(0);

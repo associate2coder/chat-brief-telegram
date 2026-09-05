@@ -54,7 +54,7 @@ function parseNonNegativeInt(
   }
 
   const parsed = Number(value);
-  if (value === "" || !Number.isInteger(parsed) || parsed < minValue) {
+  if (value.trim() === "" || !Number.isInteger(parsed) || parsed < minValue) {
     throw new Error(
       `${name} must be an integer >= ${minValue} if set (got "${value}") — refusing to start with invalid config (spec §6.1)`,
     );
