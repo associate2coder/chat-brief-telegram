@@ -4,302 +4,338 @@ owner: "olatsko@gmail.com"
 reviewers: ["Tech Lead", "Security Lead"]
 updated_at: "2026-09-05"
 feature_size: "S"
-target_surfaces: []  # filled in §4 — subset of: backend-service | web-frontend | mobile-app | desktop-app | cli | worker | library-sdk. Read (never re-derived) by api/sequences/tasks/plan-tests/review → _shared/surfaces.md
+target_surfaces: [backend-service]
 ---
 
 # Software Architecture Document — chat-brief-telegram
 
-<!-- 12 Arc42 sections. Empty section → <!-- N/A: <one-line reason> -->. -->
-<!-- C4 Context (L1) lives inline in §3. C4 Container (L2) lives inline in §5. -->
-<!-- Numbers in §10 come VERBATIM from spec.md §6 NFR — no inventing, no rounding. -->
-
 ## 1. Introduction and goals
 
-<!-- 🎯 Why: durable memory of «what + the three dominant qualities + who cares». A year from
-     now nobody recalls which three qualities were critical for this system.
-     📋 Write: 1 ¶ intent + 3 lines of top-3 quality goals + a stakeholders table.
-     ¶4 is the override slot — critic `Override` resolutions emit «Decision override: <headline>
-     — rationale: <reason>» bullets here so downstream skills see the deliberate choice. -->
-
-**Intent.** <One paragraph from spec §2 Goals — what we're building and for whom.>
+**Intent.** Ship a stateless relay so the owner can deliver a ChatGPT conversation's takeaway to
+Telegram without leaving the chat or manually copying text, and see the delivery outcome —
+success or failure — in the same conversation turn, every time (spec §2).
 
 **Top-3 quality goals (1-liners; full scenarios in §10):**
 
-1. <e.g. "Availability under partial failure of a downstream module">
-2. <e.g. "Read performance for the dashboard under data-scale growth">
-3. <e.g. "Recoverability with <30 min RTO">
+1. Bounded latency under a hard external round-trip budget (Telegram's own response time).
+2. Failure transparency that survives the Custom GPT Action layer, without ever leaking a
+   credential.
+3. Authorization integrity — every send is gated by the shared secret, with no bypass path.
 
 **Stakeholders.**
 
 | Role | Interest | Sign-off owner? |
 |---|---|---|
-| <author role from glossary> | <feature usage> | No |
-| <consumer role from glossary> | <read usage> | No |
+| Owner | Sole user — triggers sends, reads Telegram, configures the Custom GPT Action | No |
+| Custom GPT Action (ChatGPT) | Calls the relay on the owner's explicit request; displays the result | No |
 | Tech Lead | SAD approval | Yes |
+| Security Lead | Reviews the failure-message code path for credential echoing (spec §6.1) | Yes |
 
 <!-- Decision overrides (¶4) — populated by the critic resolution loop, empty otherwise. -->
 
 ## 2. Constraints
 
-<!-- 🎯 Why: §4 strategy only works when §2 has fixed WHAT IS ALREADY FIXED — stack, versions,
-     deadline, regulatory. This is an input, not an output.
-     📋 Write: four blocks — Technical / Organisational / Conventions / Regulatory.
-     📌 Pin versions («<datastore> 18», not «<datastore>»); «Q3 deadline — hard», not «ideally».
-     Never N/A — every feature inherits at least Conventions + Technical. -->
-
 **Technical.**
-- <Language + version>
-- <Framework(s) + version>
-- <Datastore(s) + version>
-- <Architecture convention — e.g. the layering style from the project convention file>
+- Node.js 20 + TypeScript 5 (ADR-0001, project-level).
+- Express (the one HTTP route the relay exposes).
+- No datastore — the relay is stateless (project ADR-0002).
+- Flat 3-layer architecture: `src/http/` (route handler) → `src/relay/` (service: validates,
+  calls Telegram, shapes the response) → `src/telegram/` (thin Bot API `sendMessage` wrapper);
+  `src/config/` reads environment variables. `src/index.ts` wires them directly — no DI container.
 
 **Organisational.**
-- <Effort budget — e.g. 3 person-weeks>
-- <Deadline — e.g. 2026-Q3 hard>
-- <Team composition>
+- No formal deadline — a personal project with no external trigger (spec §1); the owner is the
+  sole stakeholder and decision-maker.
+- Single-person effort — no team composition to coordinate.
 
 **Conventions.**
-- <Link to the project's convention file>
-- <Naming, ID strategy, error-handling pattern>
+- `CLAUDE.md` (repo root) — every HTTP response, success or failure, uses one JSON envelope;
+  failure shape `{ "error": "<reason>" }` (ADR-0002 in this feature refines this further: the
+  envelope always rides on HTTP 200).
+- Tests live beside their module as `*.test.ts`; inter-module communication is direct function
+  calls only (no queues/events) — `docs/architecture-map.md`.
 
 **Regulatory / external.**
-- <e.g. data-retention / deletion behaviour per ADR-NNNN>
-- <e.g. applicable compliance controls, or N/A with a reason>
+- No compliance regime applies (single-owner personal tool, spec §6.1 data classification:
+  confidential but not regulated PII).
+- A security review is required before shipping (spec §6.1) — scoped specifically to the
+  failure-message code path, checking no response can echo the shared secret or the Telegram bot
+  token.
 
 ## 3. Context and scope
 
-<!-- 🎯 Why: draws the SYSTEM BOUNDARY — who talks to it from outside, where the trust zone ends.
-     Without §3, §5 and §8 (authorization) blur — unclear what's «inside» vs «outside».
-     📋 Write: 2–3 sentences of business context + an external-systems table + a C4Context block.
-     📌 «External: none (deliberate, no third-party in v1)» is itself a decision worth stating.
-     Trust boundary — the line past which you don't trust data without checking it.
-     Never N/A — greenfield still draws the planned actors + external systems. -->
+The owner uses ChatGPT day-to-day and wants a takeaway from the current conversation to reach
+their own Telegram, without leaving the tab or copy-pasting. The relay is the one thing standing
+between an explicit, in-conversation request (the Custom GPT Action) and the owner's Telegram —
+it authenticates the caller, forwards the summary, and reports the outcome back into the same
+conversation turn.
 
-<Business context in 2–3 sentences. What the system does for whom.>
-
-<!-- brownfield: <one-line scan summary> (or «N/A — greenfield repo» if no source existed) -->
+<!-- brownfield: docs/architecture-map.md is the fixed greenfield-bootstrap target foundation;
+     the scaffolded skeleton (src/http, src/relay, src/telegram, src/config) already matches it
+     exactly — read directly instead of re-scanning. -->
 
 **External systems (in / out):**
 
 | Actor or system | Type | Interaction |
 |---|---|---|
-| <author role> | Person | <what they do> |
-| <external service> | System (internal/external) | <interaction> |
-| <identity provider> | System (external) | <provides auth tokens> |
+| Owner | Person | Asks ChatGPT to send the current takeaway; reads the result in Telegram |
+| ChatGPT (Custom GPT Action) | System (external) | Summarizes the conversation on explicit request, calls the relay, displays the outcome back to the owner |
+| Telegram Bot API | System (external) | Delivers the message to the owner's chat; the only system the relay authenticates *to* (via the bot token) |
 
-**C4 Context (L1):** <!-- syntax → references/c4-mermaid-syntax.md. Real names, no <placeholder> stubs. -->
+**C4 Context (L1):**
 
 ```mermaid
 C4Context
-    title <feature> — System Context
+    title chat-brief-telegram — System Context
 
-    Person(actor, "<Actor role>", "<intent>")
-    System(app, "<Our system>", "<one-sentence description>")
-    System_Ext(ext, "<External system>", "<one-sentence description>")
+    Person(owner, "Owner", "Sole user; asks ChatGPT to relay a conversation takeaway to Telegram")
+    System_Ext(chatgpt, "ChatGPT (Custom GPT Action)", "Summarizes the conversation and calls the relay on explicit owner request")
+    System(relay, "Chat Brief relay", "Validates the caller, forwards the summary to Telegram, reports the outcome back")
+    System_Ext(telegram, "Telegram Bot API", "Delivers the message to the owner's chat")
 
-    Rel(actor, app, "<interaction>", "<protocol>")
-    Rel(app, ext, "<interaction>", "<protocol>")
+    Rel(owner, chatgpt, "asks: send this to Telegram", "chat")
+    Rel(chatgpt, relay, "calls with summary + shared secret", "HTTPS")
+    Rel(relay, telegram, "sendMessage", "HTTPS")
+    Rel(relay, chatgpt, "returns success/failure result", "HTTPS")
+    Rel(telegram, owner, "delivers message", "Telegram app")
 ```
+
+The Context shows the owner asking ChatGPT to relay a takeaway; ChatGPT's Custom GPT Action calls
+the relay over HTTPS with the summary and the shared secret; the relay talks to Telegram's Bot API
+to deliver the message, then reports success or failure back to the same Action call so the owner
+sees it in-chat; Telegram separately delivers the message to the owner's own chat. The trust
+boundary is the relay's HTTP entry point: nothing past it is trusted until the shared secret
+(ADR-0001) checks out.
 
 ## 4. Solution strategy
 
-<!-- 🎯 Why: the 3–4 STRATEGIC PILLARS every ADR grows from. Without §4 each ADR looks random —
-     there's no umbrella. ⭐ The densest section — the blast-radius gate fires almost always here
-     (decisions are irreversible + multi-module).
-     📋 Write: 3–4 choices; each a heading + 2–3 sentences of rationale.
-     📌 «Store content as a table of typed blocks» is a pillar — ADR-0001 grows from it. -->
-
 **Top strategic choices (the seeds for ADRs):**
 
-1. **<e.g. Module isolation through events>** — <2–3 sentences citing quality goals + constraints>.
-2. **<e.g. Single-store persistence>** — <2–3 sentences>.
-3. **<e.g. Server-rendered read side>** — <2–3 sentences>.
+1. **Single backend-service surface, no UI** — the feature is exactly one HTTP endpoint the
+   Custom GPT Action calls; spec's non-goals explicitly rule out any frontend, and the scaffold
+   already has one Express route. `target_surfaces: [backend-service]` (frontmatter above).
+   No alternative surface exists — the spec forecloses it, so this doesn't reach the blast-radius
+   gate despite being foundational.
+2. **Authenticate via a custom shared-secret header** — the relay checks a fixed header
+   (`X-Chat-Brief-Secret`) against an environment-variable value before doing anything else,
+   keeping this credential distinct from the Telegram bot token (CONTEXT.md glossary) and from
+   Bearer/OAuth semantics that don't apply to one static, hand-rotated value. → **ADR-0001**.
+3. **Always respond HTTP 200 with a result envelope** — every response, success or failure,
+   returns 200 with a JSON body carrying the outcome, so the Custom GPT Action never has a
+   non-2xx path whose body could be discarded before the model sees it — directly satisfying
+   AC-02's requirement that a failure reason can't be hidden behind a generic message.
+   → **ADR-0002**.
+4. **Synchronous, in-process integration; no persistence, no cache, no queue** — `http → relay →
+   telegram` is a direct function-call chain inside one always-on process (project ADR-0002 no
+   database, ADR-0003 always-on). AC-01/AC-02 require the outcome visible in the same conversation
+   turn, which forecloses any async/queued path; a handful of sends a week (spec §6) forecloses a
+   cache tier. No legitimate alternative given these existing constraints, so this is decided
+   inline, not gated to an ADR.
 
-Each tactical decision in later sections should trace to one of these seeds. Tactical decisions that *contradict* a strategic choice are red flags — surface them in §11.
+**Assumptions locked in at this depth (`easy`) — decided from existing constraints rather than
+walked one-by-one, confirmed as a batch with the owner:**
+
+- The shared secret's *value* is an email-shaped string the owner chooses (distinct from the
+  `owner:` frontmatter field already public in this repo), loaded only from an environment
+  variable — never hardcoded, never committed. This closes spec §8's first open question
+  ("How is the shared secret issued/rotated in practice?"): **issuance/rotation = edit the
+  environment variable, redeploy.** No rotation endpoint or vault integration — v1 has no admin
+  surface and is single-owner by design (spec non-goals).
+- §7 Deployment — N/A, reuses the existing always-on process (project ADR-0003), no new infra.
+- §8 Crosscutting conventions (logging, error handling) inherit `CLAUDE.md` / architecture-map
+  verbatim — no per-feature override signaled by spec §6.1.
+
+Each tactical decision in later sections traces to one of the four seeds above. No tactical
+decision in this SAD contradicts a strategic choice.
 
 ## 5. Building block view
 
-<!-- 🎯 Why: INTERNAL DECOMPOSITION — modules, containers, datastores. The static topology: who
-     may talk to whom. Without §5, §6 (the flows) has no vocabulary of participants.
-     📋 Write: 1 ¶ on the style (layered / hexagonal / clean / event-driven) + a folder tree + a
-     C4Container block.
-     📌 Draw ONE Container per declared `target_surface` (frontmatter): a fullstack
-     [backend-service, web-frontend] = a backend-API container + a web/SPA container; a
-     [backend-service, mobile-app] = the API + the mobile app. The Container(web, …) line below is
-     just one surface's container — swap/add per what was declared in §4. → _shared/surfaces.md
-     📌 e.g. «web app, content API, media worker, datastore, object store, CDN». -->
-
-<One paragraph: layered / hexagonal / clean / event-driven, and why.>
+Flat 3-layer architecture, no hexagonal ceremony — the existing convention for a single-endpoint
+relay (`docs/architecture-map.md`, `CLAUDE.md`). One deployable process; the four folders below are
+logical modules within it, wired directly by `src/index.ts` with no DI container.
 
 **Internal decomposition:**
 
 ```
-<e.g. modules/<feature>/>
-├── domain/       <entities + sentinel errors>
-├── app/          <use cases / services>
-├── infra/        <repository + integration impl>
-├── ports/        <handlers, DTOs, error mapping>
-└── wiring        <self-wiring entry point>
+src/
+├── http/       <Express app + the one route: parses the header, calls relay, returns the envelope>
+├── relay/      <service layer: validates the summary is non-empty, calls the Telegram client, shapes the response>
+├── telegram/   <thin wrapper over the Bot API's sendMessage call>
+└── config/     <reads bot token, chat id, shared secret, port from environment variables>
 ```
 
-**C4 Container (L2):** <!-- syntax → references/c4-mermaid-syntax.md. Real names, no <placeholder> stubs. ONE Container per declared target_surface (frontmatter); the web container below is one example surface. -->
+**C4 Container (L2):** one container per declared `target_surface` — a single `backend-service`,
+matching `docs/architecture-map.md`'s already-fixed target container view.
 
 ```mermaid
 C4Container
-    title <feature> — Containers
+    title chat-brief-telegram — Containers
 
-    Person(actor, "<Actor>")
+    Person(owner, "Owner")
+    System_Ext(chatgpt, "ChatGPT (Custom GPT Action)", "Summarizes the conversation, calls the relay")
 
-    Container_Boundary(app, "<Our system>") {
-        Container(web, "<Web/UI>", "<technology>", "<purpose>")
-        Container(api, "<API/handler>", "<technology>", "<purpose>")
-        ContainerDb(db, "<Datastore>", "<technology>", "<purpose>")
-    }
+    Container(relay, "Chat Brief relay", "Node.js 20 / TypeScript 5 / Express", "Validates the shared secret, forwards the summary to Telegram, reports the outcome back")
 
-    System_Ext(ext, "<External>", "<purpose>")
+    System_Ext(telegram, "Telegram Bot API", "Delivers the message to the owner's chat")
 
-    Rel(actor, web, "<interaction>", "<protocol>")
-    Rel(web, api, "<calls>")
-    Rel(api, db, "<reads/writes>", "<driver>")
-    Rel(api, ext, "<emits>", "<protocol>")
+    Rel(owner, chatgpt, "asks: send this to Telegram")
+    Rel(chatgpt, relay, "POST summary + X-Chat-Brief-Secret header", "HTTPS")
+    Rel(relay, telegram, "sendMessage", "HTTPS")
+    Rel(relay, chatgpt, "200 + result envelope", "HTTPS")
+    Rel(telegram, owner, "delivers message")
 ```
+
+The Containers view shows one backend-service container, the relay, sitting between ChatGPT's
+Custom GPT Action and Telegram's Bot API: the Action posts the summary with the shared-secret
+header, the relay forwards a validated summary to Telegram via `sendMessage`, and the relay always
+answers with a 200 plus a result envelope (ADR-0002) regardless of outcome. Internally the relay
+is the four modules in the folder tree above — `http` parses the request, `relay` validates and
+shapes the response, `telegram` talks to the Bot API, `config` supplies all three with their
+environment-sourced values.
 
 ## 6. Runtime view
 
-<!-- 🎯 Why: the RUNTIME FLOW of 1–2 critical scenarios — who talks to whom, when, in what order.
-     Without §6, §5 is just boxes with no life.
-     📋 Write: a Mermaid sequenceDiagram. Participants are names from §5 (don't invent new ones).
-     Messages are semantic («saves a draft»), NO HTTP verbs / paths / status codes — endpoint-level
-     sequences arrive at the `api` stage.
-     📌 e.g. «author → web: composes draft → web → content API: save». Seed the primary flow(s) here;
-     the `sequences` stage then covers every §5 AC (no cap). Never N/A for M+; XS/S keeps ≥1 happy-path flow. -->
-
-**Critical flow 1: <flow name>**
+**Critical flow 1: happy-path send (AC-01, AC-02)**
 
 ```mermaid
 sequenceDiagram
-    actor Actor
-    participant Web
-    participant Service
-    participant Store
-    Actor->>Web: <action>
-    Web->>Service: <call>
-    Service->>Store: <write>
-    Store-->>Service: ok
-    Service-->>Web: result
-    Web-->>Actor: confirmation
+    actor Owner
+    participant ChatGPT
+    participant Relay
+    participant Telegram
+
+    Owner->>ChatGPT: "send this to Telegram"
+    ChatGPT->>Relay: summary + shared-secret header
+    Relay->>Relay: check secret, check summary non-empty
+    Relay->>Telegram: sendMessage(summary)
+    Telegram-->>Relay: delivered
+    Relay-->>ChatGPT: 200 { ok: true }
+    ChatGPT-->>Owner: confirms success in-chat
+    Telegram-->>Owner: message arrives
 ```
 
-**Critical flow 2: <e.g. async event propagation>** — <if applicable, otherwise N/A>.
+Flow 1 — happy path: the owner asks ChatGPT to send the takeaway; the Custom GPT Action calls the
+relay with the summary and the shared-secret header; the relay checks the secret and confirms the
+summary isn't empty; it calls Telegram's `sendMessage`; on delivery it answers the Action with a
+200 and a success envelope, which ChatGPT shows the owner in the same turn, while Telegram
+separately delivers the message to the owner's chat.
+
+**Critical flow 2: denied / rejected call (AC-02, AC-03, AC-04)**
+
+```mermaid
+sequenceDiagram
+    actor Owner
+    participant ChatGPT
+    participant Relay
+    participant Telegram
+
+    Owner->>ChatGPT: "send this to Telegram"
+    ChatGPT->>Relay: summary + shared-secret header
+    alt secret missing or wrong
+        Relay-->>ChatGPT: 200 { ok: false, error: "unauthorized" }
+    else summary empty or blank
+        Relay-->>ChatGPT: 200 { ok: false, error: "summary must not be empty" }
+    else secret + summary valid, Telegram rejects
+        Relay->>Telegram: sendMessage(summary)
+        Telegram-->>Relay: delivery error
+        Relay-->>ChatGPT: 200 { ok: false, error: "<plain-language reason>" }
+    end
+    ChatGPT-->>Owner: shows the failure reason in-chat
+```
+
+Flow 2 — every non-success path: a wrong or missing secret is denied outright (AC-03) with no
+hint about the summary's own validity; an empty or blank summary is rejected (AC-04); a summary
+and secret that both pass but that Telegram can't deliver (including the AC-05 case — the owner
+never started a chat with their bot — reported with its own distinct wording, every other Telegram
+obstacle reported as this same generic failure) all return the same 200 + `ok:false` shape
+(ADR-0002), so the owner always sees the reason in the same conversation turn, never a silent
+loss. The `sequences` stage covers the remaining branch detail (AC-05's distinct wording,
+Telegram-timeout handling) as its own flows.
 
 ## 7. Deployment view
 
-<!-- 🎯 Why: the TOPOLOGY DevOps must know without reading the deploy charts — how many replicas,
-     where the background worker lives, AT WHAT NUMBERS we scale.
-     📋 Write: 2–3 sentences on topology + monitoring + concrete threshold numbers.
-     📌 e.g. «500 authors → partition by quarter» (not «we'll think about scale later»).
-     🎯 N/A allowed for XS/S that reuses an existing deployment unit with no change.
-     Deployment-diagram scaffold → templates/deployment.md. -->
+<!-- N/A: reuses the existing always-on process (project ADR-0003) — this feature adds no new
+     infrastructure, replicas, or scaling unit. It's one more route inside the same Node.js
+     process the scaffold already deploys. -->
 
-<Topology in 2–3 sentences. Where it runs, replicas, scaling thresholds.>
-
-**Monitoring:**
-- <Metrics — e.g. `<metric_name>`>
-- <Alerts — e.g. «worker lag > 10 min → page on-call»>
-- <Tracing — e.g. spans on the request boundary>
-
-**Scaling thresholds:**
-- <e.g. comfortable in one table up to N rows/year>
-- <e.g. partition by quarter above N rows/year>
-
-<!-- For XS/S with no deployment change: <!-- N/A: reuses existing deployment unit, no infra change --> -->
+**Monitoring:** none exists in v1 (spec §8 — availability target deferred, no uptime monitoring
+tool chosen yet; tracked as an open question below, due before `sdd:tasks`).
 
 ## 8. Crosscutting concepts
 
-<!-- 🎯 Why: CROSS-CUTTING PATTERNS spanning several modules: logging, errors, authorization, ID
-     strategy, events, caching. ⭐ The second-densest section. A pattern inside one module is NOT
-     here; a project-wide convention belongs in the convention file.
-     📋 Write: a table — concept / convention / where defined. One row per concept.
-     📌 e.g. «sortable time-based IDs generated in the app layer» as a default from the convention file. -->
-
 | Concept | Convention | Where defined |
 |---|---|---|
-| Logging | <e.g. structured, fields `module=<name>`> | <convention file §X or here> |
-| Authentication | <e.g. token-based via middleware> | <convention file §X> |
-| Error handling | <e.g. domain sentinel → ports error mapping → JSON> | <convention file §X> |
-| ID strategy | <e.g. sortable time-based ID in the app layer> | <convention file §X> |
-| Internationalisation | <e.g. N/A, single language> | — |
-| Observability | <e.g. tracing on the request boundary> | — |
-| Events | <module-specific patterns, if any> | <here> |
+| Logging | Structured; the summary text and the shared secret are never written to logs or error traces in plain form | Spec §6.1; this SAD §2 |
+| Authentication | Custom shared-secret header (`X-Chat-Brief-Secret`), checked before any Telegram send | ADR-0001 |
+| Response shape | One JSON envelope, always HTTP 200, `{ ok, error? }` | ADR-0002; `CLAUDE.md` |
+| Error handling | Every failure reason is plain-language, never a raw exception or stack trace, and never echoes the shared secret or bot token | Spec §6.1 AC-02 |
+| Secret/config sourcing | Bot token, chat id, and shared secret are all read from environment variables only, never hardcoded; an unset/empty shared secret must fail closed, not be treated as valid | Spec §6.1; `src/config/` |
+| ID strategy | N/A — no persisted entities (project ADR-0002) | — |
+| Internationalisation | N/A — single owner, single language | — |
+| Rate limiting | None in v1 — accepted risk (brute-force, flooding) | Spec §6.1 |
+| Events | N/A — direct function calls only, no queues/events | `docs/architecture-map.md` |
 
 ## 9. Architecture decisions
 
-<!-- 🎯 Why: the REVERSE INDEX onto the adr/ folder. `ls adr/` gives the files; §9 gives the
-     semantics — why they exist, which SAD section they attach to, what status.
-     📋 Write: a 4-column table, one row per ADR. Mixed status is fine.
-     📌 e.g. «0001 | Store content as a table of typed blocks | Accepted | §4». -->
-
 | # | Title | Status | Section |
 |---|---|---|---|
-| <NNNN> | <imperative — e.g. "Use a sliding-window counter for rate limiting"> | Accepted | §<N> |
-| <NNNN> | <imperative — e.g. "Co-locate the worker in the API process"> | Accepted | §<N> |
+| 0001 | Authenticate via a custom shared-secret header | Accepted | §4 |
+| 0002 | Always return HTTP 200 with a result envelope | Accepted | §4 |
 
-ADR files live under `docs/features/<slug>/adr/NNNN-<title>.md`.
+ADR files live under `docs/features/chat-brief-telegram/adr/NNNN-<title>.md`.
 
 ## 10. Quality requirements
 
-<!-- 🎯 Why: the QUALITY TREE — take a goal from §1 and break it into concrete leaves: tests,
-     metrics, configs, drills. ⭐ Without §10, §1 is a manifesto. With §10 each declaration maps
-     to something PROVABLE.
-     📋 Write: per §1 goal — When / Then / How-verify. Numbers from spec §6 NFR VERBATIM (don't
-     round ≤250ms to ≤300ms — that's a critic F6 hit).
-     📌 e.g. «p95 ≤ 500 ms on a block update, verified by a 100 req/s load test». -->
+**QG-1. Bounded latency under a hard external round-trip budget**
+- **When:** the Custom GPT Action calls the relay with a valid summary and secret.
+- **Then:** the relay's own processing plus a normal Telegram round trip stays at p95 ≤ 3000 ms
+  (spec §6); the relay waits at most 5000 ms for Telegram's response before treating it as a
+  delivery failure (spec §6) — never an unbounded wait.
+- **How verify:** integration test timing against a faked Telegram API (both the 3000 ms p95 and
+  the 5000 ms hang/timeout case), plus a manual real-world check after deploy.
 
-Each top-3 goal from §1 expanded into a full scenario:
+**QG-2. Failure transparency without credential leakage**
+- **When:** the relay does not report success, for any reason — rejected, denied, or delivery
+  failure.
+- **Then:** the owner sees the failure in the same conversation turn as a plain-language reason
+  the Action can display verbatim, and that response never contains the shared secret or the
+  Telegram bot token, regardless of which check failed (AC-02, spec §6.1).
+- **How verify:** the security review named in spec §6.1 (Security Lead reads every failure-message
+  code path specifically for credential echoing) plus the spec §7 KPI — 0 known credential-leak
+  instances across all sends in the first 4 weeks, verified by the owner reading every failure
+  message that occurs.
 
-**QG-1. <quality attribute>**
-- **When:** <trigger condition>
-- **Then:** <expected behaviour with numbers from spec §6 NFR>
-- **How verify:** <test / chaos drill / load test / metric>
-
-**QG-2. <quality attribute>**
-- **When:** <trigger>
-- **Then:** <expected>
-- **How verify:** <how>
-
-**QG-3. <quality attribute>**
-- **When:** <trigger>
-- **Then:** <expected>
-- **How verify:** <how>
+**QG-3. Authorization integrity**
+- **When:** any caller invokes the relay, with or without the correct shared secret.
+- **Then:** a wrong or missing secret is always denied, nothing is sent to Telegram, and the
+  denial never reveals whether the summary itself was otherwise valid (AC-03); the relay must
+  never treat an unset or empty configured secret as a valid match (spec §6.1).
+- **How verify:** unit tests on the `http`/`relay` boundary covering missing header, wrong value,
+  and unset-config-value cases; the one integration test that fakes Telegram's API also asserts
+  no call reaches Telegram when the secret check fails.
 
 ## 11. Risks and technical debt
 
-<!-- 🎯 Why: ⭐ collects EVERYTHING that can break — not only the technical. Without §11 risks get
-     discussed at standups and lost; debt lives only in the head of whoever accepted it.
-     📋 Write: a risk/debt table — severity — mitigation — owner. Accepted debt in its own block.
-     📌 The first risk is often a product risk, not a technical one. That's normal. -->
-
-<!-- Severity literals: Low / Medium / High for regular risks; "Open question" for rows created by
-     a Save-as-OQ resolution during the Socratic walk (see references/socratic.md). -->
-
 | Risk / debt | Severity | Mitigation | Owner |
 |---|---|---|---|
-| <e.g. Worker lag may reach hours during a downstream outage> | Medium | <alert >10 min, on-call playbook, retry backoff> | <DevOps> |
-| <e.g. No event-schema versioning in v1> | Medium | <ADR-NNNN planned for v2, tolerate unknown fields> | <Backend> |
-| Open architectural decision: <decision-headline> | Open question | Resolve before <stage trigger or YYYY-MM-DD>; <inline rationale from the Save-as-OQ> | <owner> |
+| Duplicate-send safety — a caller-side retry after the Custom GPT Action's own call timeout is not deduplicated; a retry can double-deliver the same summary | Low | Explicitly accepted, not measured (spec §6); ADR-0003 (project) removes the cold-start-specific cause, but any timeout on the caller's side can still trigger a retry | Owner |
+| Brute-forcing the shared secret | Low | No lockout or alerting in v1 — accepted risk (spec §6.1); the secret's email-shaped value is lower-entropy than a random token, which this SAD's §4 assumptions don't change | Owner |
+| Prompt injection via pasted content instructing the model to trigger a send | Low | Accepted risk — the relay can't distinguish an owner-intended summary from an injected one (spec §6.1) | Owner |
+| Flooding via repeated sends | Low | No rate limiting in v1 — accepted risk (spec §6.1) | Owner |
+| Open architectural decision: numeric availability target for v1 | Open question | Resolve before `sdd:tasks`; no uptime monitoring exists yet to check a number against (spec §8, default: no formal SLO, best-effort only) | olatsko@gmail.com |
 
 **Accepted debt (acceptable in v1, plan to fix later):**
-- <e.g. the entity is immutable / unversioned — OK for v1, may need audit versioning in v2>
+- Single hardcoded Telegram chat id and one shared secret, both from environment variables — no
+  per-user config surface; a config change requires a redeploy (`docs/architecture-map.md`,
+  accepted for v1).
+- No event-schema or contract versioning — a single fixed endpoint, no consumers beyond one
+  Custom GPT Action; revisit only if a second caller ever appears (out of scope per spec non-goals).
 
 ## 12. Glossary
 
-<!-- 🎯 Why: ⭐ the DOMAIN GLOSSARY that ends arguments a year later («checkpoint — weekly or
-     biweekly? quarter — calendar or fiscal?»).
-     📋 Write: a term / meaning table. Business + technical terms mixed.
-     📌 e.g. «Lesson | a unit inside a course made of blocks (text, video)». -->
-
 | Term | Meaning |
 |---|---|
-| <e.g. domain object A> | <its meaning in this domain> |
-| <e.g. domain object B> | <its meaning> |
-| <e.g. domain invariant name> | <the rule, in plain language> |
+| Custom GPT Action | The mechanism inside a Custom GPT that lets ChatGPT call this feature's relay mid-conversation, only when the owner explicitly asks. NOT an automatic/background trigger. |
+| Shared secret | A fixed value configured in both the Custom GPT Action and the relay, sent as the `X-Chat-Brief-Secret` header on every call and checked before any Telegram send. NOT the Telegram bot token — the bot token authenticates the relay to Telegram; the shared secret authenticates the caller (ChatGPT) to the relay. |
+| Result envelope | The one JSON shape every relay response uses, always under HTTP 200: `{ ok: true }` on success, `{ ok: false, error: "<plain-language reason>" }` on any non-success outcome (ADR-0002). |
+| Telegram-not-started failure | The one Telegram-side delivery failure given distinct wording (AC-05): the owner has never started a conversation with their configured bot. Every other Telegram obstacle (blocked bot, invalid destination, length limits, rate limiting) reports as the generic failure instead. |
