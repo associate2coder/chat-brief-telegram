@@ -1,0 +1,148 @@
+openapi: 3.1.0
+
+info:
+  title: Chat Brief Telegram relay API
+  version: 0.1.0
+  contact:
+    name: Owner
+    email: olatsko@gmail.com
+  description: |
+    A stateless relay that lets the owner deliver a ChatGPT conversation's takeaway to
+    Telegram without leaving the chat. A Custom GPT Action, invoked only on an explicit
+    owner request, calls this one endpoint with the finished summary; the relay checks a
+    shared secret, forwards the summary to Telegram, and reports success or failure back
+    through the same call so the owner sees the outcome in-chat (spec.md §1).
+
+servers:
+  - url: https://chat-brief.example.com
+    description: Production (always-on process, ADR-0003 project-level)
+  - url: http://localhost:3000
+    description: Local
+
+tags:
+  - name: relay
+    description: The one relay action — forward a summary to Telegram.
+
+# ADR-0001 overrides the api skill's BearerAuth default: the caller (ChatGPT's Custom GPT
+# Action) presents a fixed shared secret in a custom header, not a bearer token — there is
+# no token issuance/expiry/refresh to model.
+security:
+  - SharedSecretAuth: []
+
+paths:
+  /api/v1/send:
+    post:
+      summary: Relay a conversation summary to the owner's Telegram
+      description: |
+        Called by the Custom GPT Action only on an explicit, in-conversation owner request
+        (never automatically). Validates the shared secret and the summary, forwards the
+        summary to Telegram, and reports the outcome — success or failure — in the same
+        response so the Action can show it to the owner in the same conversation turn
+        (spec.md AC-01, AC-02).
+      operationId: sendSummaryToTelegram
+      tags: [relay]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendRequest" }
+            example:
+              summary: "Test summary of the conversation's takeaway."
+      responses:
+        # ADR-0002 overrides the api skill's per-branch-status-code default: every outcome —
+        # success, auth denial, empty summary, or any Telegram-side delivery failure — answers
+        # HTTP 200, so the Custom GPT Action never has a non-2xx path whose body could be
+        # discarded before the model sees it. The caller distinguishes success from failure by
+        # whether the `error` key is present (sad.md §8), not by status code.
+        "200":
+          description: >-
+            Always returned, whatever the outcome. `SendSuccess` on delivery; `SendError` —
+            CLAUDE.md's existing failure envelope, unchanged by this feature — on any
+            rejection or delivery failure (sad.md §4 ADR-0002).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/SendSuccess"
+                  - $ref: "#/components/schemas/SendError"
+              examples:
+                sent:
+                  summary: Delivered (AC-01, sad.md §6 Flow 1)
+                  value: { status: "sent" }
+                unauthorized:
+                  summary: Wrong or missing shared secret (AC-03, sad.md §6 Flow 2)
+                  value: { error: "unauthorized" }
+                empty_summary:
+                  summary: Empty or blank summary (AC-04, sad.md §6 Flow 2)
+                  value: { error: "summary must not be empty" }
+                telegram_not_started:
+                  summary: >-
+                    Owner never started a chat with their bot — the one Telegram failure
+                    with its own distinct wording (AC-05, sad.md §6 Flow 3)
+                  value: { error: "start a conversation with your Telegram bot first" }
+                telegram_generic_failure:
+                  summary: >-
+                    Any other Telegram-side obstacle — blocked bot, invalid destination,
+                    length limit, rate limit, or a timeout past the relay's 5000ms budget
+                    (AC-02, spec §6 NFR, sad.md §6 Flow 3)
+                  value: { error: "could not deliver the message to Telegram" }
+
+components:
+  securitySchemes:
+    # ADR-0001: a custom header, not Authorization: Bearer — see the ADR for why (keeps this
+    # credential visibly distinct from the Telegram bot token and from OAuth-style semantics
+    # that don't apply to one static, hand-rotated value).
+    SharedSecretAuth:
+      type: apiKey
+      in: header
+      name: X-Chat-Brief-Secret
+      description: >-
+        The shared secret configured in both the Custom GPT Action and the relay (CONTEXT.md
+        glossary — distinct from the Telegram bot token). A missing or wrong value is denied
+        per AC-03, without revealing whether the summary itself was otherwise valid.
+
+  schemas:
+    SendRequest:
+      type: object
+      required: [summary]
+      additionalProperties: false
+      properties:
+        summary:
+          type: string
+          minLength: 1
+          # AC-04 rejects whitespace-only summaries too; minLength alone only rejects the
+          # zero-length case, so the pattern requires at least one non-whitespace character.
+          pattern: "^(?=.*\\S).+$"
+          description: >-
+            The finished conversation takeaway, produced by ChatGPT — plain text only (spec
+            §3 non-goals: no formatting/labeling is applied by the relay). Rejected if empty,
+            whitespace-only, or not text at all (AC-04).
+
+    SendSuccess:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: ["sent"]
+
+    # CLAUDE.md's existing failure envelope, verbatim — ADR-0002 in this feature only fixes
+    # the status code (always 200) around it, never the shape. This deliberately does NOT use
+    # the api skill's default `{code, message, details?}` envelope: spec AC-02 requires a
+    # single plain-language reason the Action can display verbatim, not a machine code the
+    # repo has no registry for yet (see api-sync-report.md point 2).
+    SendError:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: >-
+            A plain-language reason, never the shared secret or the Telegram bot token in any
+            form (spec §6.1). Known categories: unauthorized (AC-03); summary must not be
+            empty (AC-04); Telegram chat not started (AC-05, distinct wording); any other
+            Telegram delivery failure, including a timeout past the relay's 5000ms budget
+            (AC-02, spec §6 NFR) — reported with the same generic wording. Not a closed enum:
+            the exact wording is the relay's plain-language judgment, not a fixed code.
