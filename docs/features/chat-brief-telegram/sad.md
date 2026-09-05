@@ -253,6 +253,41 @@ shape — `CLAUDE.md`'s existing envelope verbatim, per ADR-0002 — so the owne
 reason in the same conversation turn, never a silent loss. The `sequences` stage covers the
 remaining branch detail (AC-05's distinct wording, Telegram-timeout handling) as its own flows.
 
+**Critical flow 3: Telegram-side delivery outcomes (AC-05)**
+
+```mermaid
+sequenceDiagram
+    actor Owner
+    participant ChatGPT
+    participant Relay
+    participant Telegram
+
+    Owner->>ChatGPT: "send this to Telegram"
+    ChatGPT->>Relay: summary + shared-secret header
+    Relay->>Relay: check secret, check summary non-empty
+    Relay->>Telegram: sendMessage(summary)
+    alt owner never started a chat with the bot
+        Telegram-->>Relay: chat not found / bot can't initiate
+        Relay-->>ChatGPT: 200 { error: "start a conversation with your Telegram bot first" }
+    else Telegram doesn't respond within the timeout
+        Note over Relay,Telegram: waits at most 5000 ms, then treats it as a delivery failure
+        Relay-->>ChatGPT: 200 { error: "<plain-language reason>" }
+    else any other Telegram rejection (blocked, invalid destination, length limit, rate limit)
+        Telegram-->>Relay: delivery error
+        Relay-->>ChatGPT: 200 { error: "<plain-language reason>" }
+    end
+    ChatGPT-->>Owner: shows the failure reason in-chat
+```
+
+Flow 3 — the three ways Telegram itself can fail a delivery, after the secret and summary have
+already passed: the owner never started a conversation with their configured bot gets its own
+distinct wording (AC-05), so it reads as a one-time setup issue rather than a bug; a call that
+doesn't come back within the relay's 5000 ms budget (spec §6 NFR) is treated as a delivery
+failure rather than an unbounded wait; any other Telegram-side rejection (blocked bot, invalid
+destination, length limits, rate limiting) reports as the same generic failure Flow 2 already
+shows. All three still return the 200 + `{ error: "<reason>" }` envelope (ADR-0002), so the owner
+sees the reason in the same conversation turn regardless of which of the three fired.
+
 ## 7. Deployment view
 
 <!-- N/A: reuses the existing always-on process (project ADR-0003) — this feature adds no new
