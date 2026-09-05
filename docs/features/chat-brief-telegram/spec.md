@@ -24,7 +24,7 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 ## 2. Goals
 
 - The owner can deliver a conversation's takeaway to Telegram without leaving ChatGPT or manually copying text.
-- Every delivery outcome (success or failure) is visible to the owner in the same conversation turn — no silent loss.
+- Every delivery outcome (success or failure) is visible to the owner in the same conversation turn, for every call the relay receives and finishes handling — no silent loss.
 
 ## 3. Non-goals
 
@@ -35,6 +35,7 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 - Message formatting or labeling (context tags, per-source prefixes, timestamps) — v1 relays plain summary text only (idea-brief §5).
 - A retry queue or delivery-tracking mechanism beyond a single send attempt — a failed send is reported as failed, not retried or queued by the relay itself (idea-brief §5); this is also why §6's duplicate-send risk is scoped to caller-side retries, not anything the relay attempts.
 - Length or format validation on the summary content itself, beyond rejecting empty/blank — the relay trusts ChatGPT's own judgment for summary length; the "very short summary" instruction lives in the Custom GPT's own configuration, not in the relay's logic (idea-brief §6 risk 3).
+- Authoring or configuring the Custom GPT itself — its Action schema, auth wiring, and the instruction text that tells ChatGPT how to produce and send the summary — is the owner's one-time ChatGPT-side setup, not a build deliverable of this feature; this feature delivers only the relay service the Action calls.
 
 ## 4. User stories
 
@@ -73,7 +74,7 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 ### AC-02 (US-02) — error
 **Given** the relay does not report success for any reason — whether it rejected the request, denied the caller, or failed to deliver the summary
 **When** it reports that outcome back through the same Custom GPT Action call
-**Then** the owner sees, in the same conversation turn, that the request did not succeed and a plain-language reason — without the shared secret or the Telegram bot token ever appearing in that message, regardless of which check failed
+**Then** the owner sees, in the same conversation turn, that the request did not succeed and a plain-language reason — returned as a normal, readable result the Action can display verbatim to the owner, never signaled in a way the Action layer could hide behind a generic failure message, and without the shared secret or the Telegram bot token ever appearing in that message, regardless of which check failed
 
 ### AC-03 (US-03) — authorization
 **Given** a caller does not present the correct shared secret
@@ -81,20 +82,21 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 **Then** the system denies the request, sends nothing to Telegram, and reports the denial without revealing whether the summary itself was otherwise valid
 
 ### AC-04 (US-04) — domain invariant
-**Given** the Custom GPT Action calls the relay with an empty or blank summary
+**Given** the Custom GPT Action calls the relay with a summary that is zero-length, contains only whitespace, or is missing/not text at all
 **When** the relay checks the request
-**Then** the system rejects it, sends nothing to Telegram, and tells the caller the summary must not be empty
+**Then** the system treats all of these the same way — it rejects the request, sends nothing to Telegram, and tells the caller the summary must not be empty
 
 ### AC-05 (US-05) — cross-context
 **Given** the owner has never started a conversation with their configured Telegram bot
 **When** ChatGPT calls the relay with a valid summary and shared secret
-**Then** the system reports that Telegram could not accept the message because the owner must start a conversation with their bot first, distinguishing this from a generic delivery failure
+**Then** the system reports that Telegram could not accept the message because the owner must start a conversation with their bot first, distinguishing this from a generic delivery failure — this is the only Telegram-side condition given distinct wording; every other delivery obstacle (the bot being blocked, an invalid destination, message-length limits, or rate limiting) is reported as AC-02's generic failure
 
 ## 6. Non-functional requirements
 
 | Aspect | Target | Measurement |
 |---|---|---|
-| Latency p95 (relay round trip, request received → response returned) | ≤ 3000 ms | Integration test timing against a faked Telegram API + a manual real-world check after deploy |
+| Latency p95 (relay round trip, request received → response returned, covering the relay's own processing plus a normal Telegram round trip) | ≤ 3000 ms | Integration test timing against a faked Telegram API + a manual real-world check after deploy |
+| Telegram-call timeout | The relay waits at most 5000 ms for Telegram's response; no response within that window is treated as a delivery failure (reported via AC-02), never an unbounded wait | Integration test asserting the relay returns within the timeout window when the faked Telegram API is made to hang |
 | Duplicate-send safety | A caller-side retry after the Custom GPT Action's own call timeout is not deduplicated by the relay — a retry can double-deliver the same summary | Explicitly accepted, not measured (ADR-0003 removes the cold-start-specific cause of a slow response, but any timeout on the caller's side — cold-start or otherwise — can still trigger a retry) |
 
 (Availability moved to §8 Open questions — no monitoring exists in v1 to check a number against. Throughput dropped — usage is a handful of sends a week by design, ADR-0003, and a dedicated throughput test isn't part of the architecture map's planned test surface.)
@@ -103,7 +105,9 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 
 - **Data classification:** confidential — the summary text may contain personal/work conversation content the owner chose to send, and the shared secret + Telegram bot token are credentials.
 - **Personal data touched:** yes — the summary field may contain arbitrary personal/professional content; no structured PII fields are stored (no persistence at all — ADR-0002).
-- **AuthZ/AuthN impact:** the relay authenticates the caller via the shared secret before doing anything else; there's only one role (owner), no permission tiers.
+- **AuthZ/AuthN impact:** the relay authenticates the caller via the shared secret before doing anything else; there's only one role (owner), no permission tiers. The relay must never treat an unset or empty shared secret as valid — if its own required configuration (bot token, destination chat, shared secret) is incomplete, it must fail to operate rather than silently accepting every caller.
+- **Transport:** the shared secret must be sent as request metadata, never embedded in the URL (where it could land in access logs or be visible in referrers) — and the relay must only be reachable over an encrypted connection.
+- **Logging:** the summary text and the shared secret must never be written to logs or error traces in plain form — ADR-0002's "no persistence" extends to operational logs, not only to a database.
 - **Abuse cases:**
   - Wrong/missing shared secret → denied, nothing sent, no hint about the summary's own validity (AC-03).
   - A failure message echoing the shared secret or the Telegram bot token → never allowed, in any non-success response (AC-02).
@@ -116,7 +120,7 @@ Traceability: `docs/idea-brief.md`, `docs/architecture-map.md` + ADR-0001 (Node/
 
 - **Continued personal usage** — baseline: 0 (unbuilt), target: the owner is still actively triggering sends at least once in each of weeks 2-4 after shipping (self-reported, no instrumentation).
 - **Zero credential leaks in a failure message** — baseline: 0 known instances (unbuilt), target: 0 instances across all sends in the first 4 weeks, verified by the owner reading every failure message that occurs.
-- **Delivery outcome always visible in-chat** — baseline: 0% (unbuilt), target: 100% of triggered sends produce either a success or a failure message in the same conversation turn — no silent/phantom outcome.
+- **Delivery outcome always visible in-chat** — baseline: 0% (unbuilt), target: 100% of calls the relay receives and finishes handling produce either a success or a failure message in the same conversation turn — no silent/phantom outcome. (A caller-side timeout that abandons the call before the relay responds is the accepted §6 duplicate-send risk, not a miss against this target.)
 
 ## 8. Open questions
 
