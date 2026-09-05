@@ -120,11 +120,12 @@ boundary is the relay's HTTP entry point: nothing past it is trusted until the s
    (`X-Chat-Brief-Secret`) against an environment-variable value before doing anything else,
    keeping this credential distinct from the Telegram bot token (CONTEXT.md glossary) and from
    Bearer/OAuth semantics that don't apply to one static, hand-rotated value. → **ADR-0001**.
-3. **Always respond HTTP 200 with a result envelope** — every response, success or failure,
-   returns 200 with a JSON body carrying the outcome, so the Custom GPT Action never has a
+3. **Always respond HTTP 200; failure keeps CLAUDE.md's exact envelope** — every response,
+   success or failure, returns 200; failure is `CLAUDE.md`'s already-fixed `{ "error": "<reason>" }`
+   verbatim, success is a minimal `{ "status": "sent" }`, so the Custom GPT Action never has a
    non-2xx path whose body could be discarded before the model sees it — directly satisfying
-   AC-02's requirement that a failure reason can't be hidden behind a generic message.
-   → **ADR-0002**.
+   AC-02's requirement that a failure reason can't be hidden behind a generic message, with no
+   drift from the repo's existing convention. → **ADR-0002**.
 4. **Synchronous, in-process integration; no persistence, no cache, no queue** — `http → relay →
    telegram` is a direct function-call chain inside one always-on process (project ADR-0002 no
    database, ADR-0003 always-on). AC-01/AC-02 require the outcome visible in the same conversation
@@ -181,14 +182,14 @@ C4Container
     Rel(owner, chatgpt, "asks: send this to Telegram")
     Rel(chatgpt, relay, "POST summary + X-Chat-Brief-Secret header", "HTTPS")
     Rel(relay, telegram, "sendMessage", "HTTPS")
-    Rel(relay, chatgpt, "200 + result envelope", "HTTPS")
+    Rel(relay, chatgpt, "200 + { status } or { error }", "HTTPS")
     Rel(telegram, owner, "delivers message")
 ```
 
 The Containers view shows one backend-service container, the relay, sitting between ChatGPT's
 Custom GPT Action and Telegram's Bot API: the Action posts the summary with the shared-secret
 header, the relay forwards a validated summary to Telegram via `sendMessage`, and the relay always
-answers with a 200 plus a result envelope (ADR-0002) regardless of outcome. Internally the relay
+answers with a 200 carrying `CLAUDE.md`'s JSON envelope (ADR-0002) regardless of outcome. Internally the relay
 is the four modules in the folder tree above — `http` parses the request, `relay` validates and
 shapes the response, `telegram` talks to the Bot API, `config` supplies all three with their
 environment-sourced values.
@@ -209,7 +210,7 @@ sequenceDiagram
     Relay->>Relay: check secret, check summary non-empty
     Relay->>Telegram: sendMessage(summary)
     Telegram-->>Relay: delivered
-    Relay-->>ChatGPT: 200 { ok: true }
+    Relay-->>ChatGPT: 200 { status: "sent" }
     ChatGPT-->>Owner: confirms success in-chat
     Telegram-->>Owner: message arrives
 ```
@@ -217,7 +218,7 @@ sequenceDiagram
 Flow 1 — happy path: the owner asks ChatGPT to send the takeaway; the Custom GPT Action calls the
 relay with the summary and the shared-secret header; the relay checks the secret and confirms the
 summary isn't empty; it calls Telegram's `sendMessage`; on delivery it answers the Action with a
-200 and a success envelope, which ChatGPT shows the owner in the same turn, while Telegram
+200 and a success body, which ChatGPT shows the owner in the same turn, while Telegram
 separately delivers the message to the owner's chat.
 
 **Critical flow 2: denied / rejected call (AC-02, AC-03, AC-04)**
@@ -232,13 +233,13 @@ sequenceDiagram
     Owner->>ChatGPT: "send this to Telegram"
     ChatGPT->>Relay: summary + shared-secret header
     alt secret missing or wrong
-        Relay-->>ChatGPT: 200 { ok: false, error: "unauthorized" }
+        Relay-->>ChatGPT: 200 { error: "unauthorized" }
     else summary empty or blank
-        Relay-->>ChatGPT: 200 { ok: false, error: "summary must not be empty" }
+        Relay-->>ChatGPT: 200 { error: "summary must not be empty" }
     else secret + summary valid, Telegram rejects
         Relay->>Telegram: sendMessage(summary)
         Telegram-->>Relay: delivery error
-        Relay-->>ChatGPT: 200 { ok: false, error: "<plain-language reason>" }
+        Relay-->>ChatGPT: 200 { error: "<plain-language reason>" }
     end
     ChatGPT-->>Owner: shows the failure reason in-chat
 ```
@@ -247,10 +248,10 @@ Flow 2 — every non-success path: a wrong or missing secret is denied outright 
 hint about the summary's own validity; an empty or blank summary is rejected (AC-04); a summary
 and secret that both pass but that Telegram can't deliver (including the AC-05 case — the owner
 never started a chat with their bot — reported with its own distinct wording, every other Telegram
-obstacle reported as this same generic failure) all return the same 200 + `ok:false` shape
-(ADR-0002), so the owner always sees the reason in the same conversation turn, never a silent
-loss. The `sequences` stage covers the remaining branch detail (AC-05's distinct wording,
-Telegram-timeout handling) as its own flows.
+obstacle reported as this same generic failure) all return the same 200 + `{ error: "<reason>" }`
+shape — `CLAUDE.md`'s existing envelope verbatim, per ADR-0002 — so the owner always sees the
+reason in the same conversation turn, never a silent loss. The `sequences` stage covers the
+remaining branch detail (AC-05's distinct wording, Telegram-timeout handling) as its own flows.
 
 ## 7. Deployment view
 
@@ -267,7 +268,7 @@ tool chosen yet; tracked as an open question below, due before `sdd:tasks`).
 |---|---|---|
 | Logging | Structured; the summary text and the shared secret are never written to logs or error traces in plain form | Spec §6.1; this SAD §2 |
 | Authentication | Custom shared-secret header (`X-Chat-Brief-Secret`), checked before any Telegram send | ADR-0001 |
-| Response shape | One JSON envelope, always HTTP 200, `{ ok, error? }` | ADR-0002; `CLAUDE.md` |
+| Response shape | Always HTTP 200; failure is `CLAUDE.md`'s exact envelope `{ "error": "<reason>" }`, success is `{ "status": "sent" }` — the Action tells them apart by whether `error` is present | ADR-0002; `CLAUDE.md` |
 | Error handling | Every failure reason is plain-language, never a raw exception or stack trace, and never echoes the shared secret or bot token | Spec §6.1 AC-02 |
 | Secret/config sourcing | Bot token, chat id, and shared secret are all read from environment variables only, never hardcoded; an unset/empty shared secret must fail closed, not be treated as valid | Spec §6.1; `src/config/` |
 | ID strategy | N/A — no persisted entities (project ADR-0002) | — |
@@ -337,5 +338,5 @@ ADR files live under `docs/features/chat-brief-telegram/adr/NNNN-<title>.md`.
 |---|---|
 | Custom GPT Action | The mechanism inside a Custom GPT that lets ChatGPT call this feature's relay mid-conversation, only when the owner explicitly asks. NOT an automatic/background trigger. |
 | Shared secret | A fixed value configured in both the Custom GPT Action and the relay, sent as the `X-Chat-Brief-Secret` header on every call and checked before any Telegram send. NOT the Telegram bot token — the bot token authenticates the relay to Telegram; the shared secret authenticates the caller (ChatGPT) to the relay. |
-| Result envelope | The one JSON shape every relay response uses, always under HTTP 200: `{ ok: true }` on success, `{ ok: false, error: "<plain-language reason>" }` on any non-success outcome (ADR-0002). |
+| Result envelope | The JSON shape every relay response uses, always under HTTP 200: `{ "status": "sent" }` on success, `{ "error": "<plain-language reason>" }` — `CLAUDE.md`'s existing failure envelope, unchanged — on any non-success outcome (ADR-0002). |
 | Telegram-not-started failure | The one Telegram-side delivery failure given distinct wording (AC-05): the owner has never started a conversation with their configured bot. Every other Telegram obstacle (blocked bot, invalid destination, length limits, rate limiting) reports as the generic failure instead. |
