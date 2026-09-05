@@ -1,0 +1,77 @@
+{
+  "slug": "chat-brief-telegram",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Load and validate relay configuration from environment variables",
+      "layer": "infra",
+      "deps": [],
+      "acs": ["AC-03"],
+      "dod": "Unit tests assert a complete environment produces a Config with bot token, chat id, shared secret, port, and Telegram timeout; a missing or empty shared secret fails config loading closed rather than being treated as a valid (always-fail) match.",
+      "files_hint": ["src/config/"]
+    },
+    {
+      "id": "T2",
+      "title": "Implement the Telegram sendMessage client wrapper with a bounded timeout",
+      "layer": "infra",
+      "deps": ["T1"],
+      "acs": ["AC-02", "AC-05"],
+      "dod": "Unit tests against a faked HTTP layer assert: a successful call resolves delivered; a Telegram chat-not-started response resolves as its own distinct outcome; any other Telegram error resolves as a generic delivery failure; a call that does not respond within the configured timeout (5000 ms) resolves as a timeout failure rather than hanging.",
+      "files_hint": ["src/telegram/"]
+    },
+    {
+      "id": "T3",
+      "title": "Implement summary validation (reject empty, whitespace-only, or non-text input)",
+      "layer": "domain",
+      "deps": [],
+      "acs": ["AC-04"],
+      "dod": "Unit tests assert a non-empty string with visible characters passes; an empty string, a whitespace-only string, and a missing/non-string value are all rejected the same way.",
+      "files_hint": ["src/relay/"]
+    },
+    {
+      "id": "T4",
+      "title": "Implement shared-secret authorization check (fail-closed)",
+      "layer": "domain",
+      "deps": ["T1"],
+      "acs": ["AC-03"],
+      "dod": "Unit tests assert the correct secret passes; a wrong or missing secret is rejected without evaluating the summary at all; an unset/empty configured secret always rejects, never matches by default.",
+      "files_hint": ["src/relay/"]
+    },
+    {
+      "id": "T5",
+      "title": "Implement the relay orchestration service (auth -> validate -> deliver -> shape response)",
+      "layer": "app",
+      "deps": ["T2", "T3", "T4"],
+      "acs": ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"],
+      "dod": "Unit tests with a faked Telegram client assert every branch: wrong secret -> { error: unauthorized } regardless of summary; valid secret + empty summary -> { error: summary must not be empty }; valid secret + summary + Telegram success -> { status: sent }; valid secret + summary + Telegram chat-not-started -> its own distinct wording; valid secret + summary + any other Telegram failure or timeout -> the generic failure wording; no call reaches the Telegram client when the secret or summary check fails.",
+      "files_hint": ["src/relay/"]
+    },
+    {
+      "id": "T6",
+      "title": "Add the POST /api/v1/send route and wire config -> telegram -> relay -> http",
+      "layer": "ports",
+      "deps": ["T5"],
+      "acs": ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"],
+      "dod": "The route matches contracts/openapi.yaml's sendSummaryToTelegram operation: reads the X-Chat-Brief-Secret header + JSON body, calls the relay service, and always responds HTTP 200 with the SendSuccess/SendError envelope, even when the request body is malformed or an unexpected exception is thrown, without ever including the shared secret or the Telegram bot token in the response.",
+      "files_hint": ["src/http/", "src/index.ts"]
+    },
+    {
+      "id": "T7",
+      "title": "Add the end-to-end integration test against a faked Telegram API",
+      "layer": "tests",
+      "deps": ["T6"],
+      "acs": ["AC-01", "AC-03"],
+      "dod": "One integration test drives a real HTTP request through the full app to a faked Telegram API and back, asserting: the happy-path round trip stays within the spec's p95 budget; a faked hanging Telegram response is treated as a delivery failure at the 5000 ms timeout, not an unbounded wait; a wrong shared secret never results in a call reaching the faked Telegram API.",
+      "files_hint": ["src/app.integration.test.ts"]
+    },
+    {
+      "id": "T8",
+      "title": "Document the required environment variables for deployment",
+      "layer": "docs",
+      "deps": ["T1"],
+      "acs": [],
+      "dod": "A .env.example (or README section) lists every environment variable src/config/ reads, with placeholder values only, so the owner can configure a real deployment without reading the source.",
+      "files_hint": [".env.example", "README.md"]
+    }
+  ]
+}
