@@ -1,0 +1,41 @@
+{
+  "slug": "_scaffold",
+  "tasks": [
+    {
+      "id": "S1",
+      "title": "Create the module/folder structure + entry point",
+      "layer": "scaffold",
+      "deps": [],
+      "acs": [],
+      "dod": "project builds (empty) — `npm run build` succeeds with the flat src/http, src/relay, src/telegram, src/config layout and an src/index.ts entry point",
+      "files_hint": ["package.json", "tsconfig.json", "src/index.ts", "src/http/", "src/relay/", "src/telegram/", "src/config/"]
+    },
+    {
+      "id": "S2",
+      "title": "Wire the test harness + a smoke test",
+      "layer": "scaffold",
+      "deps": ["S1"],
+      "acs": [],
+      "dod": "empty test suite runs green (`npm test`); an `app boots` smoke test passes",
+      "files_hint": ["vitest.config.ts", "src/index.test.ts"]
+    },
+    {
+      "id": "S4",
+      "title": "Add the CI workflow (build + test + lint)",
+      "layer": "scaffold",
+      "deps": ["S2"],
+      "acs": [],
+      "dod": "CI config is valid; the commands match the detected toolchain (npm run build / npm test / npm run lint)",
+      "files_hint": [".github/workflows/ci.yml"]
+    },
+    {
+      "id": "S5",
+      "title": "Write CLAUDE.md from the chosen conventions",
+      "layer": "scaffold",
+      "deps": ["S1"],
+      "acs": [],
+      "dod": "conventions doc reflects docs/architecture-map.md (error envelope, module layout, test layout, no-DB constraint)",
+      "files_hint": ["CLAUDE.md"]
+    }
+  ]
+}
