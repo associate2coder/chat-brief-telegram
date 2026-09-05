@@ -20,7 +20,7 @@ From any live ChatGPT conversation the owner can trigger a short summary deliver
 | # | Step | Source | Size | Status |
 |---|---|---|:---:|---|
 | 1 | Scaffold the project skeleton — Node/TypeScript/Express layout, test harness, CI, ready to build the relay into | `docs/architecture-map.md` (mode: greenfield-bootstrap) | XS | idea |
-| 2 | Ship the in-conversation Telegram relay — a Custom GPT Action lets the owner trigger a short summary, delivered to their Telegram behind a shared secret, with delivery failures reported back in-chat | [`docs/features/chat-brief-telegram/spec.md`](features/chat-brief-telegram/spec.md) | S | spec'd |
+| 2 | Ship the in-conversation Telegram relay — a Custom GPT Action lets the owner trigger a short summary, delivered to their Telegram behind a shared secret, with delivery failures reported back in-chat | [`docs/features/chat-brief-telegram/spec.md`](features/chat-brief-telegram/spec.md) | S | shipped |
 | 3 | Auto-deliver Deep Research conclusions to Telegram → see [Not yet specified](#not-yet-specified) | `docs/idea-brief.md` §5 Out of scope | fog | idea |
 
 ## Not yet specified
@@ -63,3 +63,4 @@ flowchart LR
 
 | Step | Shipped | Link |
 |---|---|---|
+| 2 | 2026-09-05 | [`docs/features/chat-brief-telegram/CHANGELOG.md`](features/chat-brief-telegram/CHANGELOG.md) |
