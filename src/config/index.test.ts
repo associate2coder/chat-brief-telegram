@@ -51,4 +51,29 @@ describe("loadConfig", () => {
       loadConfig({ ...baseEnv, TELEGRAM_CHAT_ID: undefined }),
     ).toThrow(/TELEGRAM_CHAT_ID/);
   });
+
+  it("fails closed on a non-numeric PORT rather than silently coercing to NaN (review-2026-09-05 finding)", () => {
+    expect(() => loadConfig({ ...baseEnv, PORT: "abc" })).toThrow(/PORT/);
+  });
+
+  it("fails closed on a blank PORT rather than silently binding a random port", () => {
+    expect(() => loadConfig({ ...baseEnv, PORT: "" })).toThrow(/PORT/);
+  });
+
+  it("accepts an explicit PORT of 0 (Node's own convention: let the OS assign a free port)", () => {
+    const config = loadConfig({ ...baseEnv, PORT: "0" });
+    expect(config.port).toBe(0);
+  });
+
+  it("fails closed on a non-numeric TELEGRAM_TIMEOUT_MS rather than silently timing out at ~0ms (review-2026-09-05 finding)", () => {
+    expect(() =>
+      loadConfig({ ...baseEnv, TELEGRAM_TIMEOUT_MS: "5oo0" }),
+    ).toThrow(/TELEGRAM_TIMEOUT_MS/);
+  });
+
+  it("fails closed on a zero or negative TELEGRAM_TIMEOUT_MS", () => {
+    expect(() =>
+      loadConfig({ ...baseEnv, TELEGRAM_TIMEOUT_MS: "0" }),
+    ).toThrow(/TELEGRAM_TIMEOUT_MS/);
+  });
 });

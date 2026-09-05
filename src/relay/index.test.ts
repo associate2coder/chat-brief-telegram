@@ -93,4 +93,38 @@ describe("handleSend", () => {
       error: "could not deliver the message to Telegram",
     });
   });
+
+  it("rejects a wrong secret before revealing a body-parse error (review-2026-09-05 finding)", async () => {
+    const fakeSend = vi.fn();
+
+    const result = await handleSend(
+      {
+        summary: undefined,
+        providedSecret: "wrong",
+        bodyError: "request body must be valid JSON",
+      },
+      config,
+      fakeSend,
+    );
+
+    expect(result).toEqual({ error: "unauthorized" });
+    expect(fakeSend).not.toHaveBeenCalled();
+  });
+
+  it("reports the body-parse error once the secret is valid, without ever reaching Telegram", async () => {
+    const fakeSend = vi.fn();
+
+    const result = await handleSend(
+      {
+        summary: undefined,
+        providedSecret: "correct-secret",
+        bodyError: "request body must be valid JSON",
+      },
+      config,
+      fakeSend,
+    );
+
+    expect(result).toEqual({ error: "request body must be valid JSON" });
+    expect(fakeSend).not.toHaveBeenCalled();
+  });
 });

@@ -14,9 +14,12 @@ interface TelegramErrorBody {
 
 function isChatNotStartedError(body: unknown): boolean {
   const err = body as Partial<TelegramErrorBody>;
+  const description = err.description ?? "";
   return (
-    err.error_code === 403 &&
-    /can't initiate conversation/i.test(err.description ?? "")
+    (err.error_code === 403 && /can't initiate conversation/i.test(description)) ||
+    // Telegram's more common real-world response for a chat id the owner never started a
+    // conversation with (sad.md §6 Flow 3 names both shapes) — review-2026-09-05 finding.
+    (err.error_code === 400 && /chat not found/i.test(description))
   );
 }
 

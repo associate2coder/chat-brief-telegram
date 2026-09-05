@@ -90,4 +90,35 @@ describe("end-to-end: request -> relay -> faked Telegram API -> response", () =>
     expect(res.body).toEqual({ error: "unauthorized" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("returns the always-200 JSON envelope for an oversized body, never a raw error page (review-2026-09-05 finding)", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const app = buildApp();
+    const oversized = JSON.stringify({ summary: "x".repeat(200 * 1024) });
+
+    const res = await request(app)
+      .post("/api/v1/send")
+      .set("X-Chat-Brief-Secret", "correct-secret")
+      .set("Content-Type", "application/json")
+      .send(oversized);
+
+    expect(res.status).toBe(200);
+    expect(res.type).toBe("application/json");
+    expect(res.body).toEqual({ error: "request body too large or invalid" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports unauthorized for a wrong secret even when the body is also malformed, never the parse error", async () => {
+    const app = buildApp();
+
+    const res = await request(app)
+      .post("/api/v1/send")
+      .set("X-Chat-Brief-Secret", "wrong-secret")
+      .set("Content-Type", "application/json")
+      .send("{not valid json");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ error: "unauthorized" });
+  });
 });

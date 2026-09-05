@@ -32,7 +32,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     botToken,
     chatId,
     sharedSecret,
-    port: Number(env.PORT ?? 3000),
-    telegramTimeoutMs: Number(env.TELEGRAM_TIMEOUT_MS ?? 5000),
+    // PORT alone allows 0 — Node's own convention for "let the OS assign a free port",
+    // already relied on by the integration test harness.
+    port: parseNonNegativeInt("PORT", env.PORT, 3000, 0),
+    telegramTimeoutMs: parseNonNegativeInt("TELEGRAM_TIMEOUT_MS", env.TELEGRAM_TIMEOUT_MS, 5000, 1),
   };
+}
+
+// A non-numeric or blank value silently coerces to NaN or 0 (Number("abc") === NaN,
+// Number("") === 0), and NaN elsewhere in the app — e.g. setTimeout's delay — coerces again to
+// near-0, causing every send to fail instantly with no diagnostic (review-2026-09-05 finding).
+// Fail closed at boot instead, same as the three credential fields above.
+function parseNonNegativeInt(
+  name: string,
+  value: string | undefined,
+  fallback: number,
+  minValue: number,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (value === "" || !Number.isInteger(parsed) || parsed < minValue) {
+    throw new Error(
+      `${name} must be an integer >= ${minValue} if set (got "${value}") — refusing to start with invalid config (spec §6.1)`,
+    );
+  }
+
+  return parsed;
 }

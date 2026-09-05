@@ -6,6 +6,11 @@ import { isValidSummary } from "./validation";
 export interface RelayRequest {
   summary: unknown;
   providedSecret: string | undefined;
+  // Set by the http layer when the request body itself couldn't be parsed (malformed JSON,
+  // oversized payload). Carried through rather than short-circuited in http/ so the shared
+  // secret is still checked first (spec §6.1) — an unauthorized caller must never learn
+  // whether its body parsed, only that it's denied.
+  bodyError?: string;
 }
 
 export type RelayResult = { status: "sent" } | { error: string };
@@ -17,6 +22,10 @@ export async function handleSend(
 ): Promise<RelayResult> {
   if (!isAuthorized(request.providedSecret, config.sharedSecret)) {
     return { error: "unauthorized" };
+  }
+
+  if (request.bodyError !== undefined) {
+    return { error: request.bodyError };
   }
 
   if (!isValidSummary(request.summary)) {

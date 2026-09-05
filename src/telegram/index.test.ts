@@ -37,6 +37,20 @@ describe("sendMessage", () => {
     expect(result).toBe("chat_not_started");
   });
 
+  it("resolves chat_not_started for Telegram's 'chat not found' 400 shape (review-2026-09-05 finding)", async () => {
+    const fakeFetch = vi.fn().mockResolvedValue(
+      jsonResponse(false, {
+        ok: false,
+        error_code: 400,
+        description: "Bad Request: chat not found",
+      }),
+    );
+
+    const result = await sendMessage(clientConfig, "hello", fakeFetch);
+
+    expect(result).toBe("chat_not_started");
+  });
+
   it("resolves failed for any other Telegram error response", async () => {
     const fakeFetch = vi.fn().mockResolvedValue(
       jsonResponse(false, { ok: false, error_code: 400, description: "Bad Request: message is too long" }),
